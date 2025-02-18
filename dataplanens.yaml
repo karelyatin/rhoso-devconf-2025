@@ -1,0 +1,107 @@
+apiVersion: dataplane.openstack.org/v1beta1
+kind: OpenStackDataPlaneNodeSet
+metadata:
+  name: openstack-edpm-ipam
+  namespace: openstack
+spec:
+  env:
+  - name: ANSIBLE_FORCE_COLOR
+    value: "True"
+  networkAttachments:
+  - ctlplane
+  nodeTemplate:
+    ansible:
+      ansibleUser: zuul
+      ansibleVars:
+        edpm_network_config_template: |
+          ---
+          {% set mtu_list = [ctlplane_mtu] %}
+          {% for network in nodeset_networks %}
+          {{ mtu_list.append(lookup('vars', networks_lower[network] ~ '_mtu')) }}
+          {%- endfor %}
+          {% set min_viable_mtu = mtu_list | max %}
+          network_config:
+          - type: ovs_bridge
+            name: {{ neutron_physical_bridge_name }}
+            mtu: {{ min_viable_mtu }}
+            use_dhcp: false
+            dns_servers: {{ ctlplane_dns_nameservers }}
+            domain: {{ dns_search_domains }}
+            addresses:
+            - ip_netmask: {{ ctlplane_ip }}/{{ ctlplane_cidr }}
+            routes: {{ ctlplane_host_routes }}
+            members:
+            - type: interface
+              name: nic2
+              mtu: {{ min_viable_mtu }}
+              # force the MAC address of the bridge to this interface
+              primary: true
+          {% for network in nodeset_networks %}
+            - type: vlan
+              mtu: {{ lookup('vars', networks_lower[network] ~ '_mtu') }}
+              vlan_id: {{ lookup('vars', networks_lower[network] ~ '_vlan_id') }}
+              addresses:
+              - ip_netmask:
+                  {{ lookup('vars', networks_lower[network] ~ '_ip') }}/{{ lookup('vars', networks_lower[network] ~ '_cidr') }}
+              routes: {{ lookup('vars', networks_lower[network] ~ '_host_routes') }}
+          {% endfor %}
+        neutron_physical_bridge_name: br-ex
+        neutron_public_interface_name: eth1
+        edpm_nodes_validation_validate_controllers_icmp: false
+        edpm_nodes_validation_validate_gateway_icmp: false
+        edpm_sshd_allowed_ranges:
+        - 192.168.122.0/24
+        - 192.168.111.0/24
+        enable_debug: false
+        gather_facts: false
+        image_prefix: openstack
+        image_tag: current-podified
+        registry_url: quay.io/podified-antelope-centos9
+        timesync_ntp_servers:
+        - hostname: pool.ntp.org
+      ansibleVarsFrom:
+      - secretRef:
+          name: redhat-registry
+    ansibleSSHPrivateKeySecret: dataplane-ansible-ssh-private-key-secret
+    extraMounts:
+    - extraVolType: Logs
+      mounts:
+      - mountPath: /runner/artifacts
+        name: ansible-logs
+      volumes:
+      - name: ansible-logs
+        persistentVolumeClaim:
+          claimName: ansible-ee-logs
+  nodes:
+    edpm-compute-0:
+      ansible:
+        ansibleHost: 192.168.122.100
+      hostName: edpm-compute-0
+      networks:
+      - defaultRoute: true
+        fixedIP: 192.168.122.100
+        name: ctlplane
+        subnetName: subnet1
+      - name: internalapi
+        subnetName: subnet1
+      - name: storage
+        subnetName: subnet1
+      - name: tenant
+        subnetName: subnet1
+  preProvisioned: true
+  services:
+  - bootstrap
+  - download-cache
+  - configure-network
+  - validate-network
+  - install-os
+  - configure-os
+  - ssh-known-hosts
+  - run-os
+  - reboot-os
+  - install-certs
+  - ovn
+  - neutron-metadata
+  - libvirt
+  - nova
+  tlsEnabled: true
